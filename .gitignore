@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Build artifacts (the app is built into ~/Applications, not the repo)
+*.app/
+build/
+*.o
+*.swiftmodule
+
+# Runtime state lives in ~/.auvik-tunnel-wrapper, never in the repo — but ignore
+# stray copies just in case.
+*.tunnel
+processed.log
+watch.log

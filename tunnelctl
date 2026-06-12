@@ -1,0 +1,239 @@
+#!/bin/zsh
+#
+# tunnelctl — list, start, and stop Auvik tunnels.
+#
+#   tunnelctl                list running tunnels (default)
+#   tunnelctl list           same
+#   tunnelctl start <name>   (re)launch a saved .tunnel by name/port-file match
+#   tunnelctl stop <port>    stop the tunnel listening on that local port
+#   tunnelctl stop <name>    stop tunnels whose .tunnel filename matches <name>
+#   tunnelctl stop all       stop every running tunnel
+#   tunnelctl json           machine-readable status of saved + running tunnels
+#
+# Assumes tunnel file paths contain no spaces (the default ~/auvik-tunnels does).
+
+emulate -L zsh
+set -u
+
+WATCH_DIR="${AUVIK_WATCH_DIR:-$HOME/auvik-tunnels}"
+STATE_DIR="${AUVIK_STATE_DIR:-$HOME/.auvik-tunnel-wrapper}"
+LAUNCHER="${0:A:h}/auvik-launch.sh"        # shared launcher (same dir as this script)
+PRUNE_FLAG="$STATE_DIR/autoprune.disabled" # exists => automatic pruning is off
+
+# Local listen port(s) in a .tunnel file.
+tunnel_ports() {
+  grep -E 'tunnel-config' -- "$1" 2>/dev/null \
+    | sed -E 's/.*= *(tcp|udp):([0-9]+):.*/\2/'
+}
+# First "device:remoteport" target in a .tunnel file.
+tunnel_target() {
+  grep -E 'tunnel-config' -- "$1" 2>/dev/null \
+    | sed -E 's/.*= *(tcp|udp):[0-9]+:([^:]+):([0-9]+):.*/\2:\3/' | head -1
+}
+
+# Browser URL for a local/remote port pair; empty for non-web ports.
+web_url() {
+  local lport="$1" rport="$2"
+  case "$rport" in
+    80)                            print -r -- "http://127.0.0.1:$lport" ;;
+    22|23|3389|3306|5432|5900|161) print -r -- "" ;;
+    *)                             print -r -- "https://127.0.0.1:$lport" ;;
+  esac
+}
+
+# Emit "pid<TAB>file" for every running AuvikTunnel tunnel process. Excludes our
+# own menu bar app (AuvikTunnelMenu) which shares the "AuvikTunnel" substring.
+running() {
+  ps -axww -o pid=,command= | while IFS= read -r ln; do
+    [[ "$ln" == *AuvikTunnel* ]] || continue
+    [[ "$ln" == *AuvikTunnelMenu* ]] && continue
+    local pid file
+    pid=$(print -r -- "$ln" | awk '{print $1}')
+    file=$(print -r -- "$ln" | grep -oE '/[^ ]+\.tunnel' | head -1)
+    [[ -n "$file" ]] && print -r -- "$pid	$file"
+  done
+}
+
+cmd_list() {
+  typeset -A pids
+  local pid file any=0
+  while IFS=$'\t' read -r pid file; do
+    pids[$file]+="$pid "
+    any=1
+  done < <(running)
+  if (( ! any )); then print -r -- "No Auvik tunnels running."; return 0; fi
+  printf "%-7s  %-24s  %s\n" "PORT" "TARGET" "TUNNEL"
+  for file in ${(k)pids}; do
+    printf "%-7s  %-24s  %s\n" \
+      "$(tunnel_ports "$file" | paste -sd, -)" \
+      "$(tunnel_target "$file")" \
+      "${file:t}"
+  done
+}
+
+cmd_stop() {
+  local target="${1:-}"
+  if [[ -z "$target" ]]; then
+    print -r -- "usage: tunnelctl stop <port|name|all>"; return 2
+  fi
+
+  local -a kill_pids
+  local pid file
+  if [[ "$target" == "all" ]]; then
+    while IFS=$'\t' read -r pid file; do kill_pids+=$pid; done < <(running)
+  else
+    while IFS=$'\t' read -r pid file; do
+      if [[ "$target" == <-> ]]; then
+        tunnel_ports "$file" | grep -qx "$target" && kill_pids+=$pid
+      else
+        [[ "${file:t}" == *"$target"* ]] && kill_pids+=$pid
+      fi
+    done < <(running)
+  fi
+
+  if (( ${#kill_pids} == 0 )); then
+    print -r -- "No running tunnel matches '$target'."; return 1
+  fi
+  print -r -- "Stopping pids: ${kill_pids[*]}"
+  kill ${kill_pids[@]} 2>/dev/null
+  sleep 1
+  # Force any stragglers.
+  for pid in ${kill_pids[@]}; do kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null; done
+  print -r -- "Done."
+}
+
+# (Re)launch a saved tunnel by exact path, filename, or substring match.
+cmd_start() {
+  local arg="${1:-}"
+  [[ -n "$arg" ]] || { print -u2 -- "usage: tunnelctl start <name|file>"; return 2; }
+
+  local file=""
+  if   [[ -f "$arg" ]];                  then file="$arg"
+  elif [[ -f "$WATCH_DIR/$arg" ]];        then file="$WATCH_DIR/$arg"
+  elif [[ -f "$WATCH_DIR/$arg.tunnel" ]]; then file="$WATCH_DIR/$arg.tunnel"
+  else
+    setopt local_options null_glob
+    local m=("$WATCH_DIR"/*"$arg"*.tunnel)
+    (( ${#m} )) && file="${m[1]}"
+  fi
+  [[ -n "$file" && -f "$file" ]] || { print -u2 -- "No saved tunnel matches '$arg' in $WATCH_DIR"; return 1; }
+
+  if running | cut -f2 | grep -qxF -- "$file"; then
+    print -r -- "Already running: ${file:t}"; return 0
+  fi
+  print -r -- "Starting ${file:t}…"
+  zsh "$LAUNCHER" "$file"
+}
+
+# Machine-readable status for the menu bar app: a JSON array covering every saved
+# tunnel in WATCH_DIR plus any running tunnel, each tagged with "running".
+cmd_json() {
+  typeset -A runpids allfiles
+  local pid file f
+  while IFS=$'\t' read -r pid file; do
+    runpids[$file]+="$pid "
+    allfiles[$file]=1
+  done < <(running)
+  setopt local_options null_glob
+  for f in "$WATCH_DIR"/*.tunnel; do allfiles[$f]=1; done
+
+  local first=1 cfg lport rport device tenant url isrun pidlist uptime fpid
+  print -n -- "["
+  for f in ${(k)allfiles}; do
+    cfg=$(grep -E 'tunnel-config' -- "$f" 2>/dev/null | head -1)
+    [[ -n "$cfg" ]] || continue
+    lport=$(print -r -- "$cfg" | sed -E 's/.*= *(tcp|udp):([0-9]+):.*/\2/')
+    device=$(print -r -- "$cfg" | sed -E 's/.*= *(tcp|udp):[0-9]+:([^:]+):.*/\2/')
+    rport=$(print -r -- "$cfg" | sed -E 's/.*= *(tcp|udp):[0-9]+:[^:]+:([0-9]+):.*/\2/')
+    tenant=$(print -r -- "$cfg" | sed -E 's/.*:([^:]+)[[:space:]]*$/\1/')
+    url=$(web_url "$lport" "$rport")
+    if [[ -n "${runpids[$f]:-}" ]]; then
+      isrun=true
+      pidlist="${runpids[$f]% }"; pidlist="${pidlist// /,}"
+      fpid="${runpids[$f]%% *}"
+      uptime=$(ps -o etime= -p "$fpid" 2>/dev/null | tr -d ' ')
+    else
+      isrun=false; pidlist=""; uptime=""
+    fi
+    (( first )) || print -n -- ","
+    first=0
+    printf '{"tenant":"%s","device":"%s","remotePort":%s,"localPort":%s,"url":"%s","running":%s,"pids":[%s],"uptime":"%s","file":"%s"}' \
+      "$tenant" "$device" "${rport:-0}" "${lport:-0}" "$url" "$isrun" "$pidlist" "$uptime" "${f:t}"
+  done
+  print -- "]"
+}
+
+_prune_log() {
+  print -r -- "$(date '+%Y-%m-%d %H:%M:%S')  $*" \
+    >> "${AUVIK_STATE_DIR:-$HOME/.auvik-tunnel-wrapper}/watch.log"
+}
+
+# Dispose of one stale file: trash (default) | delete | archive.
+_dispose() {
+  local f="$1" how="$2" dest
+  case "$how" in
+    delete)
+      rm -f -- "$f" ;;
+    archive)
+      mkdir -p "$WATCH_DIR/.archive"; mv -f -- "$f" "$WATCH_DIR/.archive/" ;;
+    trash|*)
+      dest="$HOME/.Trash/${f:t}"
+      [[ -e "$dest" ]] && dest="$HOME/.Trash/${f:t:r}.$(date +%s).tunnel"
+      mv -- "$f" "$dest" ;;
+  esac
+}
+
+# Turn automatic (daemon) pruning on/off, or report its state.
+cmd_autoprune() {
+  case "${1:-status}" in
+    on|enable)   rm -f -- "$PRUNE_FLAG"; print -r -- "auto-prune: on" ;;
+    off|disable) mkdir -p "$STATE_DIR"; : > "$PRUNE_FLAG"; print -r -- "auto-prune: off" ;;
+    status)      [[ -e "$PRUNE_FLAG" ]] && print -r -- "off" || print -r -- "on" ;;
+    *)           print -u2 -- "usage: tunnelctl autoprune [on|off|status]"; return 2 ;;
+  esac
+}
+
+# Remove saved .tunnel files older than the TTL (hours arg, else AUVIK_TTL_HOURS,
+# else 24). TTL 0 disables. Skips files whose tunnel is currently running.
+# With --auto (used by the daemon) it no-ops while auto-prune is toggled off;
+# an explicit/manual run always prunes.
+cmd_prune() {
+  local auto=0
+  [[ "${1:-}" == "--auto" ]] && { auto=1; shift; }
+  if (( auto )) && [[ -e "$PRUNE_FLAG" ]]; then return 0; fi
+
+  local hours="${1:-${AUVIK_TTL_HOURS:-24}}"
+  [[ "$hours" == <-> ]] || { print -u2 -- "prune: <hours> must be an integer"; return 2; }
+  (( hours == 0 )) && { print -r -- "Pruning disabled (TTL 0)."; return 0; }
+
+  local disposal="${AUVIK_PRUNE_DISPOSAL:-trash}"
+  local now cutoff f mtime n=0
+  now=$(date +%s); cutoff=$(( hours * 3600 ))
+
+  typeset -A run
+  local pid rf
+  while IFS=$'\t' read -r pid rf; do run[$rf]=1; done < <(running)
+
+  setopt local_options null_glob
+  for f in "$WATCH_DIR"/*.tunnel; do
+    [[ -n "${run[$f]:-}" ]] && continue          # never touch a live tunnel
+    mtime=$(stat -f %m "$f" 2>/dev/null) || continue
+    (( now - mtime < cutoff )) && continue        # still within TTL
+    if _dispose "$f" "$disposal"; then
+      _prune_log "PRUNE ($disposal): ${f:t}  (age $(( (now - mtime) / 3600 ))h)"
+      (( n++ ))
+    fi
+  done
+  print -r -- "Pruned $n file(s) older than ${hours}h via $disposal."
+}
+
+case "${1:-list}" in
+  list|ls)     cmd_list ;;
+  start|up)    shift; cmd_start "$@" ;;
+  stop|kill)   shift; cmd_stop "$@" ;;
+  prune)       shift; cmd_prune "$@" ;;
+  autoprune)   shift; cmd_autoprune "$@" ;;
+  json)        cmd_json ;;
+  -h|--help)   print -r -- "usage: tunnelctl [list | start <name> | stop <port|name|all> | prune [--auto] [hours] | autoprune on|off|status | json]" ;;
+  *)           print -r -- "usage: tunnelctl [list | start <name> | stop <port|name|all> | prune [--auto] [hours] | autoprune on|off|status | json]"; exit 2 ;;
+esac
