@@ -36,6 +36,35 @@ Then set your browser to save `.tunnel` downloads to `~/auvik-tunnels` (see
 [Point your browser at the folder](#point-your-browser-at-the-folder)). Download
 a tunnel from Auvik and it launches automatically.
 
+## Demo
+
+The menu bar shows a connected-nodes icon with a count of active tunnels; the
+dropdown manages them:
+
+```
+  ⧉ 2                          ← menu bar (filled icon + active count)
+  ┌─────────────────────────────────────────┐
+  │ Active                                   │
+  │   lifefitnessazdsm · :24547            ▸ │── 10.231.32.8:443
+  │   Disconnect All (2)                     │   up 12:43
+  ├──────────────────────────────────────────│   Open https://127.0.0.1:24547
+  │ Reconnect                              ▸ │   ──────────
+  ├──────────────────────────────────────────│   Disconnect
+  │ Refresh now                              │
+  │ Open Tunnels Folder…                     │
+  │ Open Watcher Log…                        │
+  ├──────────────────────────────────────────│
+  │ ☑ Auto-prune stale files                 │
+  │ Prune stale files now                    │
+  ├──────────────────────────────────────────│
+  │ Quit                                     │
+  └─────────────────────────────────────────┘
+```
+
+> Replace this with a real screenshot: open the menu and run
+> `screencapture -iW ~/Desktop/menu.png`, then drop it in a `docs/` folder and
+> link it here.
+
 ## Why a dedicated folder (not ~/Downloads)
 
 macOS protects `~/Downloads`, `~/Desktop`, and `~/Documents` (TCC). A launchd
