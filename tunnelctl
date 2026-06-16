@@ -19,6 +19,13 @@ WATCH_DIR="${AUVIK_WATCH_DIR:-$HOME/auvik-tunnels}"
 STATE_DIR="${AUVIK_STATE_DIR:-$HOME/.auvik-tunnel-wrapper}"
 LAUNCHER="${0:A:h}/auvik-launch.sh"        # shared launcher (same dir as this script)
 PRUNE_FLAG="$STATE_DIR/autoprune.disabled" # exists => automatic pruning is off
+ALIAS_FILE="$STATE_DIR/hostnames"          # "device<TAB>friendly name" per line
+
+# Friendly name for a device (the remote host, usually an IP); empty if none.
+alias_for() {
+  [[ -f "$ALIAS_FILE" ]] || return 0
+  awk -F'\t' -v d="$1" '$1==d { sub(/^[^\t]*\t/, ""); print; exit }' "$ALIAS_FILE"
+}
 
 # Local listen port(s) in a .tunnel file.
 tunnel_ports() {
@@ -137,7 +144,7 @@ cmd_json() {
   setopt local_options null_glob
   for f in "$WATCH_DIR"/*.tunnel; do allfiles[$f]=1; done
 
-  local first=1 cfg lport rport device tenant url isrun pidlist uptime fpid
+  local first=1 cfg lport rport device tenant url isrun pidlist uptime fpid alias
   print -n -- "["
   for f in ${(k)allfiles}; do
     cfg=$(grep -E 'tunnel-config' -- "$f" 2>/dev/null | head -1)
@@ -147,6 +154,8 @@ cmd_json() {
     rport=$(print -r -- "$cfg" | sed -E 's/.*= *(tcp|udp):[0-9]+:[^:]+:([0-9]+):.*/\2/')
     tenant=$(print -r -- "$cfg" | sed -E 's/.*:([^:]+)[[:space:]]*$/\1/')
     url=$(web_url "$lport" "$rport")
+    alias=$(alias_for "$device")
+    alias=${alias//\\/\\\\}; alias=${alias//\"/\\\"}   # JSON-escape user-entered text
     if [[ -n "${runpids[$f]:-}" ]]; then
       isrun=true
       pidlist="${runpids[$f]% }"; pidlist="${pidlist// /,}"
@@ -157,8 +166,8 @@ cmd_json() {
     fi
     (( first )) || print -n -- ","
     first=0
-    printf '{"tenant":"%s","device":"%s","remotePort":%s,"localPort":%s,"url":"%s","running":%s,"pids":[%s],"uptime":"%s","file":"%s"}' \
-      "$tenant" "$device" "${rport:-0}" "${lport:-0}" "$url" "$isrun" "$pidlist" "$uptime" "${f:t}"
+    printf '{"tenant":"%s","device":"%s","alias":"%s","remotePort":%s,"localPort":%s,"url":"%s","running":%s,"pids":[%s],"uptime":"%s","file":"%s"}' \
+      "$tenant" "$device" "$alias" "${rport:-0}" "${lport:-0}" "$url" "$isrun" "$pidlist" "$uptime" "${f:t}"
   done
   print -- "]"
 }
@@ -227,13 +236,78 @@ cmd_prune() {
   print -r -- "Pruned $n file(s) older than ${hours}h via $disposal."
 }
 
+# Manage friendly names for devices (remote hosts), stored in ALIAS_FILE.
+#   tunnelctl alias                       list all aliases
+#   tunnelctl alias <device>              show the alias for a device
+#   tunnelctl alias <device> <name...>    set/replace the alias
+#   tunnelctl alias --clear <device>      remove the alias
+cmd_alias() {
+  case "${1:-list}" in
+    list|"")
+      [[ -s "$ALIAS_FILE" ]] && cat -- "$ALIAS_FILE" || print -r -- "No host aliases set."
+      ;;
+    --clear|-c)
+      local dev="${2:-}"
+      [[ -n "$dev" ]] || { print -u2 -- "usage: tunnelctl alias --clear <device>"; return 2; }
+      [[ -f "$ALIAS_FILE" ]] || { print -r -- "No alias for $dev."; return 0; }
+      local tmp="$ALIAS_FILE.$$"
+      awk -F'\t' -v d="$dev" '$1!=d' "$ALIAS_FILE" > "$tmp" && mv -f -- "$tmp" "$ALIAS_FILE"
+      print -r -- "Cleared alias for $dev."
+      ;;
+    *)
+      local dev="$1"; shift
+      if (( $# == 0 )); then
+        local a; a=$(alias_for "$dev")
+        [[ -n "$a" ]] && print -r -- "$a" || print -r -- "(no alias for $dev)"
+        return 0
+      fi
+      local name="$*"
+      name="${name//$'\t'/ }"; name="${name//$'\n'/ }"   # keep the file one-record-per-line
+      mkdir -p "$STATE_DIR"
+      local tmp="$ALIAS_FILE.$$"
+      { [[ -f "$ALIAS_FILE" ]] && awk -F'\t' -v d="$dev" '$1!=d' "$ALIAS_FILE"
+        printf '%s\t%s\n' "$dev" "$name"; } > "$tmp" && mv -f -- "$tmp" "$ALIAS_FILE"
+      print -r -- "Aliased $dev -> $name"
+      ;;
+  esac
+}
+
+# Show, set, or clear the saved path to the AuvikTunnel binary. The path is
+# persisted to $STATE_DIR/auvik-bin and read by the watcher daemon, the shared
+# launcher, and tunnelctl start — so all of them agree on one location. AUVIK_BIN
+# in the environment still overrides it.
+#   tunnelctl bin              show the saved path (and where it resolves now)
+#   tunnelctl bin <path>       save a path (must exist and be executable)
+#   tunnelctl bin --clear      forget the saved path (back to auto-detection)
+cmd_bin() {
+  local conf="$STATE_DIR/auvik-bin"
+  if (( $# == 0 )); then
+    if [[ -s "$conf" ]]; then print -r -- "$(<"$conf")"
+    else print -r -- "(not set; using \$AUVIK_BIN or auto-detection)"; fi
+    return 0
+  fi
+  if [[ "$1" == "--clear" || "$1" == "-c" ]]; then
+    rm -f -- "$conf"; print -r -- "Forgot saved AuvikTunnel path."; return 0
+  fi
+  local bin="${1/#\~/$HOME}"   # NB: not "path" — that's tied to $PATH in zsh
+  [[ -e "$bin" ]] || { print -u2 -- "No such file: $bin"; return 1; }
+  [[ -x "$bin" ]] || { print -u2 -- "Not executable: $bin"; return 1; }
+  mkdir -p "$STATE_DIR"
+  print -r -- "${bin:A}" > "$conf"
+  print -r -- "AuvikTunnel binary set to ${bin:A}"
+}
+
+USAGE="usage: tunnelctl [list | start <name> | stop <port|name|all> | prune [--auto] [hours] | autoprune on|off|status | alias [<device> [name...]] | bin [<path>|--clear] | json]"
+
 case "${1:-list}" in
   list|ls)     cmd_list ;;
   start|up)    shift; cmd_start "$@" ;;
   stop|kill)   shift; cmd_stop "$@" ;;
   prune)       shift; cmd_prune "$@" ;;
   autoprune)   shift; cmd_autoprune "$@" ;;
+  alias)       shift; cmd_alias "$@" ;;
+  bin)         shift; cmd_bin "$@" ;;
   json)        cmd_json ;;
-  -h|--help)   print -r -- "usage: tunnelctl [list | start <name> | stop <port|name|all> | prune [--auto] [hours] | autoprune on|off|status | json]" ;;
-  *)           print -r -- "usage: tunnelctl [list | start <name> | stop <port|name|all> | prune [--auto] [hours] | autoprune on|off|status | json]"; exit 2 ;;
+  -h|--help)   print -r -- "$USAGE" ;;
+  *)           print -r -- "$USAGE"; exit 2 ;;
 esac

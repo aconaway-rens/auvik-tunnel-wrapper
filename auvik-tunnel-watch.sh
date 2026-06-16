@@ -19,8 +19,9 @@
 # the files already in Downloads so only NEW downloads ever launch.
 #
 # Config via env (all optional):
-#   AUVIK_BIN           AuvikTunnel binary  (auto: ~/auvik/Auvik Tunnel/AuvikTunnel,
-#                       then ~/Downloads/AuvikTunnel)
+#   AUVIK_BIN           AuvikTunnel binary  (else the path saved by install.sh /
+#                       `tunnelctl bin` in $AUVIK_STATE_DIR/auvik-bin, else auto:
+#                       ~/auvik/Auvik Tunnel/AuvikTunnel, then ~/Downloads/AuvikTunnel)
 #   AUVIK_WATCH_DIR     folder to watch     (default ~/auvik-tunnels)
 #   AUVIK_STATE_DIR     state/logs dir      (default ~/.auvik-tunnel-wrapper)
 #   AUVIK_LAUNCH_MODE   headless (default) | terminal
@@ -33,7 +34,15 @@
 emulate -L zsh
 set -u
 
-# Prefer the installed client location; fall back to a copy in Downloads.
+STATE_DIR="${AUVIK_STATE_DIR:-$HOME/.auvik-tunnel-wrapper}"
+BIN_CONF="$STATE_DIR/auvik-bin"
+
+# Resolve the AuvikTunnel binary: AUVIK_BIN env, then the path saved by
+# install.sh / `tunnelctl bin` ($BIN_CONF) — this is how the launchd daemon, which
+# can't see a shell-exported AUVIK_BIN, finds it — then common install locations.
+if [[ -z "${AUVIK_BIN:-}" && -s "$BIN_CONF" ]]; then
+  AUVIK_BIN="$(<"$BIN_CONF")"
+fi
 if [[ -z "${AUVIK_BIN:-}" ]]; then
   for _cand in "$HOME/auvik/Auvik Tunnel/AuvikTunnel" "$HOME/Downloads/AuvikTunnel"; do
     [[ -x "$_cand" ]] && { AUVIK_BIN="$_cand"; break; }
@@ -41,7 +50,6 @@ if [[ -z "${AUVIK_BIN:-}" ]]; then
 fi
 AUVIK_BIN="${AUVIK_BIN:-$HOME/auvik/Auvik Tunnel/AuvikTunnel}"
 WATCH_DIR="${AUVIK_WATCH_DIR:-$HOME/Downloads}"
-STATE_DIR="${AUVIK_STATE_DIR:-$HOME/.auvik-tunnel-wrapper}"
 LAUNCH_MODE="${AUVIK_LAUNCH_MODE:-headless}"
 INTERVAL="${AUVIK_INTERVAL:-3}"
 OPEN_BROWSER="${AUVIK_OPEN_BROWSER:-1}"

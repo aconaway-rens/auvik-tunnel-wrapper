@@ -41,6 +41,32 @@ for d in "$HOME/.local/bin" /usr/local/bin /opt/homebrew/bin; do
   if [[ -d "$d" && -w "$d" ]]; then ln -sf "$BIN_DIR/tunnelctl" "$d/tunnelctl"; TUNNELCTL_LINK="$d/tunnelctl"; break; fi
 done
 
+# 1b. Resolve and persist the AuvikTunnel binary path. The watcher runs under
+#     launchd and never sees a shell-exported AUVIK_BIN, so we save the path to
+#     $STATE_DIR/auvik-bin, which every entry point reads. Honors AUVIK_BIN, then
+#     auto-detects, then (on a terminal) prompts. Never fatal: the binary may be
+#     installed later, and `tunnelctl bin <path>` can set it after the fact.
+BIN_CONF="$STATE_DIR/auvik-bin"
+AUVIK_BIN_PATH="${AUVIK_BIN:-}"
+AUVIK_BIN_PATH="${AUVIK_BIN_PATH/#\~/$HOME}"
+if [[ -z "$AUVIK_BIN_PATH" || ! -x "$AUVIK_BIN_PATH" ]]; then
+  for c in "$HOME/auvik/Auvik Tunnel/AuvikTunnel" "$HOME/Downloads/AuvikTunnel"; do
+    [[ -x "$c" ]] && { AUVIK_BIN_PATH="$c"; break; }
+  done
+fi
+if [[ ( -z "$AUVIK_BIN_PATH" || ! -x "$AUVIK_BIN_PATH" ) && -t 0 ]]; then
+  print -r -- "Could not find the AuvikTunnel binary (a file you downloaded from Auvik)."
+  print -rn -- "Path to AuvikTunnel (blank to skip for now): "
+  read -r reply || reply=""
+  AUVIK_BIN_PATH="${reply/#\~/$HOME}"
+fi
+if [[ -n "$AUVIK_BIN_PATH" && -x "$AUVIK_BIN_PATH" ]]; then
+  AUVIK_BIN_PATH="${AUVIK_BIN_PATH:A}"   # absolute
+  print -r -- "$AUVIK_BIN_PATH" >"$BIN_CONF"
+else
+  AUVIK_BIN_PATH=""   # mark unresolved for the final report
+fi
+
 # 2. Mark any .tunnel files already in the watch folder as "already handled"
 #    (fresh), so only NEW files dropped in after this point will launch.
 setopt null_glob
@@ -90,6 +116,13 @@ print -r -- "Installed and watching $WATCH_DIR for new *.tunnel files (mode=$LAU
 print -r -- "  script:  $SCRIPT"
 print -r -- "  agent:   $PLIST"
 print -r -- "  logs:    $STATE_DIR/watch.log"
+if [[ -n "$AUVIK_BIN_PATH" ]]; then
+  print -r -- "  binary:  $AUVIK_BIN_PATH"
+else
+  print -r -- "  binary:  NOT FOUND — tunnels won't launch until you point us at AuvikTunnel:"
+  print -r -- "             tunnelctl bin /path/to/AuvikTunnel"
+  print -r -- "           (or re-run: AUVIK_BIN=/path/to/AuvikTunnel ./install.sh)"
+fi
 if [[ -n "$TUNNELCTL_LINK" ]]; then
   print -r -- "  control: $TUNNELCTL_LINK   (run: tunnelctl list | tunnelctl stop <port|all>)"
 else

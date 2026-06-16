@@ -14,6 +14,7 @@ struct Tunnel: Identifiable, Decodable, Equatable {
     var id: String { file }
     let tenant: String
     let device: String
+    let alias: String?
     let remotePort: Int
     let localPort: Int
     let url: String
@@ -21,6 +22,14 @@ struct Tunnel: Identifiable, Decodable, Equatable {
     let pids: [Int]
     let uptime: String
     let file: String
+
+    // Friendly host name when one is set, otherwise the raw device (usually an IP).
+    var host: String {
+        let a = alias ?? ""
+        return a.isEmpty ? device : a
+    }
+    // Top-line label shared by the active and reconnect menus.
+    var menuLabel: String { "\(tenant)  ·  \(host)  ·  :\(String(localPort))" }
 }
 
 @MainActor
@@ -115,6 +124,36 @@ final class TunnelStore: ObservableObject {
         NSWorkspace.shared.open(u)
     }
 
+    // Prompt for a friendly name for the tunnel's host (keyed by device, so it
+    // applies to every tunnel pointing at the same host). Blank resets to the IP.
+    func rename(_ t: Tunnel) {
+        let alert = NSAlert()
+        alert.messageText = "Rename host"
+        alert.informativeText = "Friendly name for \(t.device). Leave blank to reset."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = t.alias ?? ""
+        field.placeholderString = t.device
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let ctl = self.ctl
+        let device = t.device
+        Task.detached {
+            if name.isEmpty {
+                _ = Self.run(["/bin/zsh", ctl, "alias", "--clear", device])
+            } else {
+                _ = Self.run(["/bin/zsh", ctl, "alias", device, name])
+            }
+            await MainActor.run { self.refresh() }
+        }
+    }
+
     // Run a command, return its stdout. Off the main actor so the UI never blocks.
     nonisolated static func run(_ argv: [String]) -> String {
         let p = Process()
@@ -145,13 +184,14 @@ struct MenuContent: View {
         if !store.active.isEmpty {
             Text("Active")
             ForEach(store.active) { t in
-                Menu("\(t.tenant)  ·  :\(t.localPort)") {
-                    Text("\(t.device):\(t.remotePort)")
+                Menu(t.menuLabel) {
+                    Text("\(t.host):\(String(t.remotePort))")
                     Text("up \(t.uptime)")
                     if !t.url.isEmpty {
                         Button("Open \(t.url)") { store.openInBrowser(t) }
                     }
                     Divider()
+                    Button("Rename Host…") { store.rename(t) }
                     Button("Disconnect") { store.disconnect(t) }
                 }
             }
@@ -162,7 +202,10 @@ struct MenuContent: View {
             Divider()
             Menu("Reconnect") {
                 ForEach(store.saved) { t in
-                    Button("\(t.tenant)  ·  :\(t.localPort)") { store.reconnect(t) }
+                    Menu(t.menuLabel) {
+                        Button("Reconnect") { store.reconnect(t) }
+                        Button("Rename Host…") { store.rename(t) }
+                    }
                 }
             }
         }

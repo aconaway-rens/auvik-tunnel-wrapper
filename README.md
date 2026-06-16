@@ -45,11 +45,12 @@ dropdown manages them:
   ⧉ 2                          ← menu bar (filled icon + active count)
   ┌─────────────────────────────────────────┐
   │ Active                                   │
-  │   lifefitnessazdsm · :24547            ▸ │── 10.231.32.8:443
+  │   lifefitnessazdsm · Core sw · :24547  ▸ │── Core sw:443
   │   Disconnect All (2)                     │   up 12:43
   ├──────────────────────────────────────────│   Open https://127.0.0.1:24547
   │ Reconnect                              ▸ │   ──────────
-  ├──────────────────────────────────────────│   Disconnect
+  ├──────────────────────────────────────────│   Rename Host…
+  │ Refresh now                              │   Disconnect
   │ Refresh now                              │
   │ Open Tunnels Folder…                     │
   │ Open Watcher Log…                        │
@@ -123,8 +124,19 @@ tunnelctl start saralee   # (re)launch a saved .tunnel by name/substring
 tunnelctl stop 33770      # stop the tunnel on local port 33770
 tunnelctl stop saralee    # stop tunnels whose filename matches
 tunnelctl stop all        # stop everything
+tunnelctl alias 10.0.0.1 "Core switch"  # friendly name for a host (IP)
+tunnelctl alias 10.0.0.1  # show the alias; `alias` alone lists all
+tunnelctl alias --clear 10.0.0.1        # remove the alias
+tunnelctl bin ~/Downloads/AuvikTunnel   # point at the AuvikTunnel binary
 tunnelctl json            # machine-readable status (saved + running)
 ```
+
+**Host aliases:** tunnel targets are usually bare IPs, which are hard to tell
+apart when several share a tenant. `tunnelctl alias` maps a device (host) to a
+friendly name, stored in `~/.auvik-tunnel-wrapper/hostnames`. The name is keyed
+by host, so it applies to every tunnel pointing at that host and shows up in
+both `tunnelctl json` and the menu bar app (which can set it via **Rename
+Host…**).
 
 **Reconnecting:** because used `.tunnel` files are kept in `~/auvik-tunnels`,
 every tunnel you've downloaded can be relaunched later with `tunnelctl start`
@@ -152,10 +164,13 @@ This compiles `AuvikTunnelMenu.swift`, bundles + ad-hoc-signs
 `~/Applications/Auvik Tunnel Menu.app`, and loads a launch agent
 (`com.redeye.auvik-tunnel-menu`) so it starts at login. A network icon appears
 in the menu bar with a count of active tunnels. The dropdown shows **Active**
-tunnels (`tenant · :localport`) with **Open** / **Disconnect** / **Disconnect
-All**, plus a **Reconnect** submenu listing saved-but-not-running tunnels you can
-relaunch. It polls `tunnelctl json` every 4s. Requires the Xcode Command Line
-Tools (`swiftc`). Quit from the menu; it returns at next login.
+tunnels (`tenant · host · :localport`) with **Open** / **Rename Host…** /
+**Disconnect** / **Disconnect All**, plus a **Reconnect** submenu listing
+saved-but-not-running tunnels you can relaunch or rename. **Rename Host…** sets a
+friendly name for the host (see [Host aliases](#managing-tunnels-tunnelctl)) so IP-only
+targets are easy to tell apart. It polls `tunnelctl json` every 4s. Requires the
+Xcode Command Line Tools (`swiftc`). Quit from the menu; it returns at next
+login.
 
 ## File lifecycle / auto-prune
 
@@ -214,8 +229,28 @@ working and adjust `AUVIK_TTL_HOURS` to match Auvik's real token lifetime.
 
 ## Binary location
 
-Auto-detected: prefers `~/auvik/Auvik Tunnel/AuvikTunnel` (the installed
-client), falls back to `~/Downloads/AuvikTunnel`. Override with `AUVIK_BIN`.
+`AuvikTunnel` is a file you download from Auvik; this wrapper does not install
+it. The path is resolved in this order:
+
+1. `AUVIK_BIN` in the environment (highest priority).
+2. The path you saved — via `install.sh` or `tunnelctl bin <path>` — stored in
+   `~/.auvik-tunnel-wrapper/auvik-bin`. **This is what the launchd watcher uses,**
+   since a background agent never sees a shell-exported `AUVIK_BIN`.
+3. Auto-detection: `~/auvik/Auvik Tunnel/AuvikTunnel`, then `~/Downloads/AuvikTunnel`.
+
+`install.sh` resolves the binary (env → auto-detect → prompt when run in a
+terminal) and saves it for you. If it can't find it, install still completes and
+warns you; point at it later without reinstalling:
+
+```sh
+tunnelctl bin /path/to/AuvikTunnel   # save the path (must exist + be executable)
+tunnelctl bin                        # show the saved path
+tunnelctl bin --clear                # forget it (back to auto-detection)
+```
+
+Changing the saved path takes effect for new launches; restart the watcher
+(`./install.sh` again, or reload the launch agent) if you want the running
+daemon to pick it up immediately.
 
 ## Logs
 
@@ -253,13 +288,63 @@ left up — use `tunnelctl stop all` first if you want them gone.
 | `install.sh` / `uninstall.sh` | Install/remove the watcher launch agent + `tunnelctl` |
 | `auvik-tunnel-watch.sh` | The polling watcher daemon |
 | `auvik-launch.sh` | Shared launcher (AuvikTunnel invocation + browser-open), used by the watcher *and* `tunnelctl start` |
-| `tunnelctl` | CLI: `list` / `start` / `stop` / `prune` / `autoprune` / `json` |
+| `tunnelctl` | CLI: `list` / `start` / `stop` / `prune` / `autoprune` / `alias` / `bin` / `json` |
 | `menubar/AuvikTunnelMenu.swift` | SwiftUI menu bar app |
 | `menubar/build.sh` | Compile + bundle + ad-hoc-sign + install the app |
 
 The installed runtime lives **outside** the repo, under
 `~/.auvik-tunnel-wrapper/` (a copy of the scripts plus state/logs), so the
 watcher never depends on the cloned checkout.
+
+## Technical details
+
+**Languages.** The watcher, launcher, and `tunnelctl` are `zsh` (targeting the
+macOS system `/bin/zsh`, run with `emulate -L zsh` + `set -u`). The menu bar app
+is Swift / SwiftUI (`MenuBarExtra`) with a little AppKit (`NSAlert`,
+`NSWorkspace`, `NSApplication`).
+
+**Third-party dependencies.** None. There is no package manager, lockfile, or
+vendored code — everything is the macOS-bundled toolchain and CLI utilities.
+
+| Component | Needs | Notes |
+|-----------|-------|-------|
+| Scripts | `/bin/zsh` | Ships with macOS. |
+| Menu bar app (build) | `swiftc` (Xcode Command Line Tools), `codesign` | Build-time only. |
+| Menu bar app (run) | macOS 13+ | `MenuBarExtra` requires it (`LSMinimumSystemVersion 13.0`). |
+| Runtime | `AuvikTunnel` | Supplied by you; see [Binary location](#binary-location). |
+
+**System utilities used** (all part of macOS): `launchctl` (load the agents),
+`ps` / `lsof` (find running tunnels and wait for a listening port), `stat`
+(dedupe key + prune age), `grep` / `sed` / `awk` / `paste` (parse `.tunnel`
+files), `osascript` (Terminal launch mode), and `open` (browser / Finder).
+
+**Build.** `menubar/build.sh` compiles with
+`swiftc -O -parse-as-library -framework SwiftUI -framework AppKit`
+(`-parse-as-library` so `@main` is honored — the file has no top-level code),
+assembles a `.app` bundle with a generated `Info.plist` (`LSUIElement` = true, so
+it's a menubar-only accessory with no Dock icon), ad-hoc signs it
+(`codesign --sign -`) so Gatekeeper will run it locally, and installs it to
+`~/Applications`.
+
+**Process model.** Two launchd user agents (in `~/Library/LaunchAgents`):
+`com.redeye.auvik-tunnel-watch` (the polling daemon — `KeepAlive` true,
+`AbandonProcessGroup` true so tunnels survive a daemon restart) and
+`com.redeye.auvik-tunnel-menu` (the menu bar app — `KeepAlive` false so **Quit**
+sticks until next login). `AuvikTunnel` processes are launched detached
+(`nohup … & disown`) and are discovered later by scanning `ps`, so they outlive
+the watcher.
+
+**Data flow.** `tunnelctl` is the single source of truth: it parses `.tunnel`
+files and the process table and emits `tunnelctl json`. The menu bar app is a
+thin client that polls that JSON every 4s and shells back out to `tunnelctl` for
+actions (`stop`, `start`, `alias`). No tunnel logic is duplicated in Swift.
+
+**State** lives in `~/.auvik-tunnel-wrapper/`: `bin/` (installed copies of the
+scripts), `processed.log` (dedupe keys), `hostnames` (host aliases), `auvik-bin`
+(saved binary path), `autoprune.disabled` (prune toggle flag), and the logs.
+
+**Network.** The wrapper itself makes no network calls; all tunneling and auth is
+done by `AuvikTunnel`. Browser-open only ever targets `127.0.0.1`.
 
 ## Security / privacy
 

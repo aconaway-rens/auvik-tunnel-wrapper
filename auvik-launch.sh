@@ -7,7 +7,8 @@
 # `tunnelctl start` so launch behavior is identical everywhere.
 #
 # Honors: AUVIK_BIN, AUVIK_LAUNCH_MODE, AUVIK_OPEN_BROWSER, AUVIK_PERSIST,
-#         AUVIK_STATE_DIR.
+#         AUVIK_STATE_DIR. When AUVIK_BIN is unset it reads the path saved by
+#         install.sh / `tunnelctl bin` from $AUVIK_STATE_DIR/auvik-bin.
 
 emulate -L zsh
 set -u
@@ -15,14 +16,22 @@ set -u
 file="${1:-}"
 [[ -n "$file" && -f "$file" ]] || { print -u2 -- "usage: auvik-launch.sh <tunnel-file>"; exit 2; }
 
-# Resolve the AuvikTunnel binary (installed location, then a Downloads copy).
+STATE_DIR="${AUVIK_STATE_DIR:-$HOME/.auvik-tunnel-wrapper}"
+BIN_CONF="$STATE_DIR/auvik-bin"
+
+# Resolve the AuvikTunnel binary. Precedence: AUVIK_BIN env, then the path saved
+# by install.sh / `tunnelctl bin` ($BIN_CONF), then common install locations.
+# The saved-path file is how the launchd watcher — which never sees a
+# shell-exported AUVIK_BIN — learns where the user's binary lives.
+if [[ -z "${AUVIK_BIN:-}" && -s "$BIN_CONF" ]]; then
+  AUVIK_BIN="$(<"$BIN_CONF")"
+fi
 if [[ -z "${AUVIK_BIN:-}" ]]; then
   for _c in "$HOME/auvik/Auvik Tunnel/AuvikTunnel" "$HOME/Downloads/AuvikTunnel"; do
     [[ -x "$_c" ]] && { AUVIK_BIN="$_c"; break; }
   done
 fi
 AUVIK_BIN="${AUVIK_BIN:-$HOME/auvik/Auvik Tunnel/AuvikTunnel}"
-STATE_DIR="${AUVIK_STATE_DIR:-$HOME/.auvik-tunnel-wrapper}"
 LAUNCH_MODE="${AUVIK_LAUNCH_MODE:-headless}"
 OPEN_BROWSER="${AUVIK_OPEN_BROWSER:-1}"
 PERSIST="${AUVIK_PERSIST:-0}"
