@@ -4,7 +4,7 @@ All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.0] - 2026-06-17
 
 ### Added
 - **Configurable AuvikTunnel binary path** — the path is now persisted to
@@ -56,4 +56,5 @@ Initial public release.
   (`AUVIK_WATCH_DIR`, `AUVIK_LAUNCH_MODE`, `AUVIK_OPEN_BROWSER`, `AUVIK_PERSIST`,
   `AUVIK_TTL_HOURS`, `AUVIK_PRUNE_DISPOSAL`, `AUVIK_BIN`).
 
+[1.1.0]: https://github.com/aconaway-rens/auvik-tunnel-wrapper/releases/tag/v1.1.0
 [1.0.0]: https://github.com/aconaway-rens/auvik-tunnel-wrapper/releases/tag/v1.0.0
